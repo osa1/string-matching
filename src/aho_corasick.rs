@@ -10,7 +10,7 @@ pub struct AhoCorasick {
     states: Vec<HashMap<char, usize>>,
 
     // NOTE For state N fails state is fails[N-1]. Fail for state 0 is not defined.
-    fails: Vec<usize>,
+    fails: Option<Vec<usize>>,
 
     // outputs[n] = outputs of state n
     outputs: Vec<HashSet<usize>>,
@@ -21,7 +21,7 @@ impl AhoCorasick {
         AhoCorasick {
             keywords: vec![],
             states: vec![HashMap::new()],
-            fails: vec![],
+            fails: None,
             outputs: vec![HashSet::new()],
         }
     }
@@ -47,9 +47,14 @@ impl AhoCorasick {
         }
 
         self.outputs[state].insert(self.keywords.len() - 1);
+        self.fails = None; // TODO can we update fails incrementally?
     }
 
-    pub fn make_fails(&mut self) {
+    fn make_fails(&mut self) {
+        if self.fails.is_some() {
+            return;
+        }
+
         let mut fails = vec![0; self.states.len() - 1];
         // -1 because state 0 doesn't have a fail state
         // (perhaps define f(0) = 0 and simplify this?
@@ -83,33 +88,45 @@ impl AhoCorasick {
                 }
 
                 fails[*next - 1] = self.states[fail_state].get(ch).cloned().unwrap_or(0);
+
+                // Otherwise unsafe below is really unsafe
+                assert!(*next != fails[*next - 1]);
+                let output_vec: *mut HashSet<usize> =
+                    (&mut self.outputs[*next]) as *mut HashSet<usize>;
+                for out in &self.outputs[fails[*next - 1]] {
+                    unsafe {
+                        (*output_vec).insert(*out);
+                    }
+                }
             }
         }
 
-        self.fails = fails;
+        self.fails = Some(fails);
     }
 
-    pub fn match_(&self, text: &str) -> Vec<(usize, &str)> {
+    pub fn match_(&mut self, text: &str) -> Vec<(usize, &str)> {
         let mut ret = vec![];
 
-        let mut check_output = |idx: usize, state: usize| {
-            for output in &self.outputs[state] {
-                let kw = self.keywords[*output].as_str();
-                // println!("check_output idx: {}, state: {}, kw: {}", idx, state, kw);
-                ret.push((
-                    idx - (kw.len() - 1), /* FIXME not correct for unicode */
-                    kw,
-                ));
-            }
-        };
+        // Ideally make_fails() would return a reference to the fail vector but that causes
+        // borrowchk issues
+        self.make_fails();
+        let fails = self.fails.as_ref().unwrap();
 
         let mut state = 0;
         for (ch_idx, ch) in text.chars().enumerate() {
             while state != 0 && self.states[state].get(&ch).is_none() {
-                state = self.fails[state - 1];
+                state = fails[state - 1];
             }
             state = self.states[state].get(&ch).cloned().unwrap_or(0);
-            check_output(ch_idx, state);
+
+            for output in &self.outputs[state] {
+                let kw = self.keywords[*output].as_str();
+                // println!("check_output idx: {}, state: {}, kw: {}", idx, state, kw);
+                ret.push((
+                    ch_idx - (kw.len() - 1), /* FIXME not correct for unicode */
+                    kw,
+                ));
+            }
         }
 
         ret
@@ -122,8 +139,8 @@ fn test_trie() {
     ac.add_keyword("hers");
     ac.add_keyword("his");
     ac.add_keyword("she");
+
     // println!("states: {:?}", ac.states);
-    ac.make_fails();
     // println!("fails: {:?}", ac.fails);
     // println!("outputs: {:?}", ac.outputs);
 
@@ -152,9 +169,7 @@ fn test_trie_2() {
     ac.add_keyword("xfoo");
     ac.add_keyword("bar");
     ac.add_keyword("bax");
-    ac.make_fails();
 
     // We start matching "xfoo", but after "xfo" we fail, and fail state has an output.
-    // FIXME
-    assert_eq!(ac.match_("xfobax"), vec![(1, "fo"), (3, "bax")]);
+    assert_eq!(ac.match_("xfobaxbar"), vec![(1, "fo"), (3, "bax"), (6, "bar")]);
 }
