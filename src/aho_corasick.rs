@@ -12,9 +12,8 @@ pub struct AhoCorasick {
     // NOTE For state N fails state is fails[N-1]. Fail for state 0 is not defined.
     fails: Vec<usize>,
 
-    // Hacky: set of output states. Incorporating this into states causes too much trouble with
-    // borrowchk as we need to iterate states while updating output states.
-    outputs: HashSet<usize>,
+    // outputs[n] = outputs of state n
+    outputs: Vec<HashSet<usize>>,
 }
 
 impl AhoCorasick {
@@ -23,7 +22,7 @@ impl AhoCorasick {
             keywords: vec![],
             states: vec![HashMap::new()],
             fails: vec![],
-            outputs: HashSet::new(),
+            outputs: vec![HashSet::new()],
         }
     }
 
@@ -41,18 +40,19 @@ impl AhoCorasick {
                 Entry::Vacant(entry) => {
                     entry.insert(n_states);
                     self.states.push(HashMap::new());
+                    self.outputs.push(HashSet::new());
                     state = n_states;
                 }
             }
         }
 
-        self.outputs.insert(state);
+        self.outputs[state].insert(self.keywords.len() - 1);
     }
 
     pub fn make_fails(&mut self) {
         let mut fails = vec![0; self.states.len() - 1];
-            // -1 because state 0 doesn't have a fail state
-            // (perhaps define f(0) = 0 and simplify this?
+        // -1 because state 0 doesn't have a fail state
+        // (perhaps define f(0) = 0 and simplify this?
 
         // Breadth-first traversal of the trie
         // Note that we keep indices of states here instead of references to states, to avoid
@@ -89,21 +89,30 @@ impl AhoCorasick {
         self.fails = fails;
     }
 
-    pub fn match_(&self, text: &str) {
-        let mut state = 0;
-        for ch in text.chars() {
-            if self.outputs.contains(&state) {
-                println!("found match: {}", state);
+    pub fn match_(&self, text: &str) -> Vec<(usize, &str)> {
+        let mut ret = vec![];
+
+        let mut check_output = |idx: usize, state: usize| {
+            for output in &self.outputs[state] {
+                let kw = self.keywords[*output].as_str();
+                // println!("check_output idx: {}, state: {}, kw: {}", idx, state, kw);
+                ret.push((
+                    idx - (kw.len() - 1), /* FIXME not correct for unicode */
+                    kw,
+                ));
             }
+        };
+
+        let mut state = 0;
+        for (ch_idx, ch) in text.chars().enumerate() {
             while state != 0 && self.states[state].get(&ch).is_none() {
                 state = self.fails[state - 1];
             }
             state = self.states[state].get(&ch).cloned().unwrap_or(0);
+            check_output(ch_idx, state);
         }
 
-        if self.outputs.contains(&state) {
-            println!("found match: {}", state);
-        }
+        ret
     }
 }
 
@@ -113,14 +122,39 @@ fn test_trie() {
     ac.add_keyword("hers");
     ac.add_keyword("his");
     ac.add_keyword("she");
-    println!("{:?}", ac.states);
+    // println!("states: {:?}", ac.states);
     ac.make_fails();
-    println!("{:?}", ac.fails);
-    println!("outputs: {:?}", ac.outputs);
+    // println!("fails: {:?}", ac.fails);
+    // println!("outputs: {:?}", ac.outputs);
 
-    ac.match_("   she");
-    ac.match_(" hers");
-    ac.match_("  his");
-    println!("---");
-    ac.match_("   she  hers   his");
+    assert_eq!(ac.match_("she"), vec![(0, "she")]);
+
+    assert_eq!(ac.match_("    she"), vec![(4, "she")]);
+
+    assert_eq!(ac.match_("  hers "), vec![(2, "hers")]);
+
+    assert_eq!(ac.match_(" his"), vec![(1, "his")]);
+
+    assert_eq!(
+        ac.match_(" she hers his "),
+        vec![(1, "she"), (5, "hers"), (10, "his")]
+    );
+
+    assert_eq!(ac.match_("hershe"), vec![(0, "hers"), (3, "she")]);
+
+    assert_eq!(ac.match_("hishe"), vec![(0, "his"), (2, "she")]);
+}
+
+#[test]
+fn test_trie_2() {
+    let mut ac = AhoCorasick::new();
+    ac.add_keyword("fo");
+    ac.add_keyword("xfoo");
+    ac.add_keyword("bar");
+    ac.add_keyword("bax");
+    ac.make_fails();
+
+    // We start matching "xfoo", but after "xfo" we fail, and fail state has an output.
+    // FIXME
+    assert_eq!(ac.match_("xfobax"), vec![(1, "fo"), (3, "bax")]);
 }
