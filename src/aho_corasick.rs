@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::collections::VecDeque; // queue
 
 // TODO: Visualize the graph with graphiz
+// TODO: Implement a variant that can search a text with just a immutable borrow (currently we need
+// &mut self).
+// TODO: Maybe provide a few IntoIter impls.
 
 pub struct AhoCorasick {
     keywords: Vec<String>,
@@ -133,6 +136,62 @@ impl AhoCorasick {
     }
 }
 
+pub struct MatchIter<'a, 'b> {
+    ac: &'a AhoCorasick,
+    state: usize,
+    loc: usize,
+    chars: ::std::iter::Enumerate<::std::str::Chars<'b>>,
+
+    // Only available when yielding outputs of a state
+    output_iter: Option<::std::collections::hash_set::Iter<'a, usize>>,
+}
+
+impl<'a, 'b> Iterator for MatchIter<'a, 'b> {
+    type Item = (usize, &'a str);
+
+    fn next(&mut self) -> Option<(usize, &'a str)> {
+        if let Some(output_iter) = &mut self.output_iter {
+            if let Some(output_idx) = output_iter.next() {
+                let kw = self.ac.keywords[*output_idx].as_str();
+                return Some((
+                        self.loc - (kw.len() - 1), // FIXME
+                        kw,
+                ));
+            } else {
+                self.output_iter = None;
+            }
+        }
+
+        match self.chars.next() {
+            None => None,
+            Some((ch_idx, ch)) => {
+                self.loc = ch_idx;
+                while self.state != 0 && self.ac.states[self.state].get(&ch).is_none() {
+                    // TODO: what if fails was invalidated? is that even possible?
+                    // (can I add a word after building an iterator?)
+                    self.state = (self.ac.fails.as_ref().unwrap())[self.state - 1];
+                }
+                self.state = self.ac.states[self.state].get(&ch).cloned().unwrap_or(0);
+                self.output_iter = Some(self.ac.outputs[self.state].iter());
+                self.next()
+            }
+        }
+    }
+}
+
+impl AhoCorasick {
+    pub fn match_iter<'a, 'b>(&'a mut self, str: &'b str) -> MatchIter<'a, 'b> {
+        self.make_fails();
+        MatchIter {
+            ac: self,
+            state: 0,
+            loc: 0,
+            chars: str.chars().enumerate(),
+            output_iter: None,
+        }
+    }
+}
+
 #[test]
 fn test_trie() {
     let mut ac = AhoCorasick::new();
@@ -159,6 +218,7 @@ fn test_trie() {
 
     assert_eq!(ac.match_("hershe"), vec![(0, "hers"), (3, "she")]);
 
+    // overlapping matches
     assert_eq!(ac.match_("hishe"), vec![(0, "his"), (2, "she")]);
 }
 
@@ -172,4 +232,36 @@ fn test_trie_2() {
 
     // We start matching "xfoo", but after "xfo" we fail, and fail state has an output.
     assert_eq!(ac.match_("xfobaxbar"), vec![(1, "fo"), (3, "bax"), (6, "bar")]);
+}
+
+#[test]
+fn test_trie_iterator() {
+    let mut ac = AhoCorasick::new();
+    ac.add_keyword("hers");
+    ac.add_keyword("his");
+    ac.add_keyword("she");
+
+    let mut iter = ac.match_iter(" she hers his ");
+    assert_eq!(iter.next(), Some((1, "she")));
+    assert_eq!(iter.next(), Some((5, "hers")));
+    assert_eq!(iter.next(), Some((10, "his")));
+    assert_eq!(iter.next(), None);
+
+    // overlapping matches
+    let mut iter = ac.match_iter("hishe");
+    assert_eq!(iter.next(), Some((0, "his")));
+    assert_eq!(iter.next(), Some((2, "she")));
+    assert_eq!(iter.next(), None);
+
+    let mut ac = AhoCorasick::new();
+    ac.add_keyword("fo");
+    ac.add_keyword("xfoo");
+    ac.add_keyword("bar");
+    ac.add_keyword("bax");
+
+    let mut iter = ac.match_iter("xfobaxbar");
+    assert_eq!(iter.next(), Some((1, "fo")));
+    assert_eq!(iter.next(), Some((3, "bax")));
+    assert_eq!(iter.next(), Some((6, "bar")));
+    assert_eq!(iter.next(), None);
 }
